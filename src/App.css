@@ -450,6 +450,26 @@
   transform: translateY(-1px);
 }
 
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.scroll-sentinel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3rem 0 1rem;
+  color: var(--text-muted);
+  font-family: var(--font-racing);
+  font-size: 0.9rem;
+}
+
 /* Lightbox Modal */
 .lightbox-backdrop {
   position: fixed;

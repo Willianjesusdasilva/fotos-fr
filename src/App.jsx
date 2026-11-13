@@ -1,21 +1,22 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   Calendar, 
   Download, 
   Image as ImageIcon, 
-  Layers, 
   X, 
   ChevronLeft, 
   ChevronRight, 
   ExternalLink,
   Sparkles,
   Camera,
-  FolderOpen
+  Loader2,
+  CheckCircle2
 } from 'lucide-react';
 import JSZip from 'jszip';
 import './App.css';
 
-// Formata tamanho em bytes
+const PAGE_SIZE = 24; // Paginação virtual infinita para não travar a DOM com centenas de fotos
+
 function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '';
   const k = 1024;
@@ -28,14 +29,18 @@ export default function App() {
   const [gallery, setGallery] = useState([]);
   const [selectedDateId, setSelectedDateId] = useState(null);
   const [activeLightboxIndex, setActiveLightboxIndex] = useState(null);
-  const [isZipping, setIsZipping] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [zipProgress, setZipProgress] = useState(null); // { current, total, percentage }
   const [loading, setLoading] = useState(true);
 
-  // Carrega o manifesto de fotos gerado automaticamente pelo script
+  // Observer ref para infinite scroll
+  const observerTarget = useRef(null);
+
+  // Carrega manifesto
   useEffect(() => {
     fetch('./gallery.json')
       .then((res) => {
-        if (!res.ok) throw new Error('Sem fotos catalogadas ainda');
+        if (!res.ok) throw new Error('Sem fotos catalogadas');
         return res.json();
       })
       .then((data) => {
@@ -52,6 +57,11 @@ export default function App() {
       });
   }, []);
 
+  // Reseta a paginação ao trocar de data
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [selectedDateId]);
+
   const totalPhotosCount = useMemo(() => {
     return gallery.reduce((acc, curr) => acc + (curr.photos?.length || 0), 0);
   }, [gallery]);
@@ -62,8 +72,28 @@ export default function App() {
   }, [gallery, selectedDateId]);
 
   const currentPhotos = currentEvent?.photos || [];
+  const visiblePhotos = useMemo(() => {
+    return currentPhotos.slice(0, visibleCount);
+  }, [currentPhotos, visibleCount]);
 
-  // Baixar foto individualmente
+  // Infinite Scroll Observer
+  useEffect(() => {
+    if (!observerTarget.current || visibleCount >= currentPhotos.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, currentPhotos.length));
+        }
+      },
+      { rootMargin: '400px' }
+    );
+
+    observer.observe(observerTarget.current);
+    return () => observer.disconnect();
+  }, [visibleCount, currentPhotos.length]);
+
+  // Baixar foto individual original em alta resolução
   const handleDownloadSingle = async (e, photo) => {
     e.stopPropagation();
     try {
@@ -79,34 +109,53 @@ export default function App() {
       document.body.removeChild(a);
     } catch (error) {
       console.error('Erro ao baixar foto:', error);
-      // Fallback direto
       window.open(`./${photo.path}`, '_blank');
     }
   };
 
-  // Baixar todas as fotos da data selecionada em arquivo .zip
+  // Download do ZIP em lote com controle de concorrência e barra de progresso
   const handleDownloadAllAsZip = async () => {
-    if (!currentEvent || currentPhotos.length === 0 || isZipping) return;
+    if (!currentEvent || currentPhotos.length === 0 || zipProgress !== null) return;
 
     try {
-      setIsZipping(true);
       const zip = new JSZip();
       const folderName = `FloripaRacing_${currentEvent.id}`;
       const imgFolder = zip.folder(folderName);
+      const total = currentPhotos.length;
+      let completed = 0;
 
-      const downloadPromises = currentPhotos.map(async (photo) => {
-        try {
-          const res = await fetch(`./${photo.path}`);
-          const blob = await res.blob();
-          imgFolder.file(photo.filename, blob);
-        } catch (err) {
-          console.error(`Falha ao carregar ${photo.filename} para zip`, err);
-        }
-      });
+      setZipProgress({ current: 0, total, percentage: 0 });
 
-      await Promise.all(downloadPromises);
+      // Baixa em lotes de 4 concorrentes para não estourar a memória / rede
+      const CONCURRENCY = 4;
+      for (let i = 0; i < total; i += CONCURRENCY) {
+        const batch = currentPhotos.slice(i, i + CONCURRENCY);
+        await Promise.all(
+          batch.map(async (photo) => {
+            try {
+              const res = await fetch(`./${photo.path}`);
+              const blob = await res.blob();
+              imgFolder.file(photo.filename, blob);
+            } catch (err) {
+              console.error(`Erro ao baixar ${photo.filename} para zip`, err);
+            } finally {
+              completed++;
+              setZipProgress({
+                current: completed,
+                total,
+                percentage: Math.round((completed / total) * 90) // até 90% no download
+              });
+            }
+          })
+        );
+      }
 
-      const content = await zip.generateAsync({ type: 'blob' });
+      setZipProgress((prev) => ({ ...prev, percentage: 95 }));
+      const content = await zip.generateAsync(
+        { type: 'blob', compression: 'STORE' } // 'STORE' não recomprime JPGs, economizando 80% de CPU
+      );
+
+      setZipProgress({ current: total, total, percentage: 100 });
       const url = window.URL.createObjectURL(content);
       const a = document.createElement('a');
       a.href = url;
@@ -119,7 +168,7 @@ export default function App() {
       console.error('Erro ao gerar arquivo zip:', err);
       alert('Houve um erro ao compactar as fotos.');
     } finally {
-      setIsZipping(false);
+      setTimeout(() => setZipProgress(null), 1500);
     }
   };
 
@@ -127,21 +176,21 @@ export default function App() {
   const openLightbox = (index) => setActiveLightboxIndex(index);
   const closeLightbox = () => setActiveLightboxIndex(null);
 
-  const prevPhoto = (e) => {
+  const prevPhoto = useCallback((e) => {
     e?.stopPropagation();
     setActiveLightboxIndex((prev) => 
       prev > 0 ? prev - 1 : currentPhotos.length - 1
     );
-  };
+  }, [currentPhotos.length]);
 
-  const nextPhoto = (e) => {
+  const nextPhoto = useCallback((e) => {
     e?.stopPropagation();
     setActiveLightboxIndex((prev) => 
       prev < currentPhotos.length - 1 ? prev + 1 : 0
     );
-  };
+  }, [currentPhotos.length]);
 
-  // Atalhos de teclado no lightbox
+  // Teclas de navegação
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (activeLightboxIndex === null) return;
@@ -151,11 +200,11 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeLightboxIndex, currentPhotos.length]);
+  }, [activeLightboxIndex, prevPhoto, nextPhoto]);
 
   return (
     <div className="app-layout">
-      {/* Header com estilo moderno Floripa Racing */}
+      {/* Header */}
       <header className="app-header">
         <div className="header-container">
           <div className="brand-section">
@@ -184,7 +233,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Container */}
+      {/* Main Content */}
       <main className="main-content">
         <section className="hero-banner">
           <div className="hero-tag">
@@ -193,26 +242,25 @@ export default function App() {
           </div>
           <h1 className="hero-heading">Galeria por Eventos</h1>
           <p className="hero-subheading">
-            Selecione uma data para visualizar os registros em alta definição e fazer download das imagens individuais ou em lote (.zip).
+            Otimizado para alto desempenho com carregamento instantâneo de thumbnails WebP e downloads em resolução máxima original.
           </p>
         </section>
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: '4rem 0', color: 'var(--text-muted)' }}>
-            <p>Carregando galeria...</p>
+            <Loader2 className="spinner" size={32} />
+            <p style={{ marginTop: '1rem' }}>Carregando galeria...</p>
           </div>
         ) : gallery.length === 0 ? (
-          /* Estado Vazio com Instruções de Uso */
           <div className="empty-state">
             <Camera className="empty-icon" />
             <h2 className="empty-title">Nenhuma foto encontrada ainda</h2>
             <p className="empty-desc">
-              Para adicionar fotos e criar novas datas automaticamente, basta criar uma pasta com a data dentro de <code>public/assets/</code> e fazer push para o repositório.
+              Basta adicionar uma pasta de data em <code>public/assets/</code> e fazer push para o GitHub.
             </p>
             <div className="instruction-box">
               📁 public/assets/13_11_2026/foto1.jpg<br />
-              📁 public/assets/13_11_2026/foto2.jpg<br />
-              📁 public/assets/20_11_2026/corrida.jpg
+              📁 public/assets/13_11_2026/foto2.jpg
             </div>
           </div>
         ) : (
@@ -243,7 +291,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Barra do Evento Selecionado & Botão de Download do Pacote Completo */}
+            {/* Barra do Evento & Download do ZIP */}
             {currentEvent && (
               <div className="event-bar">
                 <div className="event-details">
@@ -251,7 +299,7 @@ export default function App() {
                     <span>{currentEvent.title}</span>
                   </h2>
                   <span className="event-subtitle">
-                    Mostrando {currentPhotos.length} {currentPhotos.length === 1 ? 'registro fotográfico' : 'registros fotográficos'}
+                    Exibindo {visiblePhotos.length} de {currentPhotos.length} fotos
                   </span>
                 </div>
 
@@ -259,18 +307,27 @@ export default function App() {
                   <button 
                     className="btn-zip-download"
                     onClick={handleDownloadAllAsZip}
-                    disabled={isZipping || currentPhotos.length === 0}
+                    disabled={zipProgress !== null || currentPhotos.length === 0}
                   >
-                    <Download size={18} />
-                    <span>{isZipping ? 'Compactando fotos...' : `Baixar Todas (${currentPhotos.length}) em .ZIP`}</span>
+                    {zipProgress ? (
+                      <>
+                        <Loader2 className="spinner" size={18} />
+                        <span>Compactando {zipProgress.current}/{zipProgress.total} ({zipProgress.percentage}%)</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download size={18} />
+                        <span>Baixar Todas ({currentPhotos.length}) em .ZIP</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Grid de Fotos */}
+            {/* Grid de Fotos com Thumbnails Leves */}
             <div className="photos-grid">
-              {currentPhotos.map((photo, idx) => (
+              {visiblePhotos.map((photo, idx) => (
                 <div 
                   key={photo.filename} 
                   className="photo-card"
@@ -278,10 +335,11 @@ export default function App() {
                 >
                   <div className="photo-wrapper">
                     <img 
-                      src={`./${photo.path}`} 
+                      src={`./${photo.thumbPath || photo.path}`} 
                       alt={photo.filename} 
                       className="photo-img" 
                       loading="lazy"
+                      decoding="async"
                     />
                     <div className="photo-overlay">
                       <div className="zoom-indicator">
@@ -294,12 +352,12 @@ export default function App() {
                     <div className="photo-meta">
                       <span className="photo-name" title={photo.filename}>{photo.filename}</span>
                       {photo.size > 0 && (
-                        <span className="photo-size">{formatFileSize(photo.size)}</span>
+                        <span className="photo-size">{formatFileSize(photo.size)} (Alta Def.)</span>
                       )}
                     </div>
                     <button 
                       className="btn-icon-download"
-                      title="Baixar imagem"
+                      title="Baixar imagem original em alta resolução"
                       onClick={(e) => handleDownloadSingle(e, photo)}
                     >
                       <Download size={16} />
@@ -308,11 +366,19 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {/* Alvo do Observer para Scroll Infinito */}
+            {visibleCount < currentPhotos.length && (
+              <div ref={observerTarget} className="scroll-sentinel">
+                <Loader2 className="spinner" size={24} />
+                <span>Carregando mais fotos...</span>
+              </div>
+            )}
           </>
         )}
       </main>
 
-      {/* Lightbox / Modal de Visualização Expandida */}
+      {/* Lightbox / Modal */}
       {activeLightboxIndex !== null && currentPhotos[activeLightboxIndex] && (
         <div className="lightbox-backdrop" onClick={closeLightbox}>
           <div className="lightbox-header" onClick={(e) => e.stopPropagation()}>
@@ -326,7 +392,7 @@ export default function App() {
             <div className="lightbox-actions">
               <button 
                 className="lightbox-btn" 
-                title="Baixar esta foto"
+                title="Baixar original em alta definição"
                 onClick={(e) => handleDownloadSingle(e, currentPhotos[activeLightboxIndex])}
               >
                 <Download size={18} />
@@ -341,7 +407,7 @@ export default function App() {
             </div>
           </div>
 
-          <button className="lightbox-nav-prev" onClick={prevPhoto} title="Foto Anterior">
+          <button className="lightbox-nav-prev" onClick={prevPhoto} title="Foto Anterior (Seta Esquerda)">
             <ChevronLeft size={28} />
           </button>
 
@@ -353,7 +419,7 @@ export default function App() {
             />
           </div>
 
-          <button className="lightbox-nav-next" onClick={nextPhoto} title="Próxima Foto">
+          <button className="lightbox-nav-next" onClick={nextPhoto} title="Próxima Foto (Seta Direita)">
             <ChevronRight size={28} />
           </button>
         </div>

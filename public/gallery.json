@@ -9,11 +9,13 @@
       {
         "filename": "foto1.svg",
         "path": "assets/13_11_2026/foto1.svg",
+        "thumbPath": "assets/13_11_2026/foto1.svg",
         "size": 1093
       },
       {
         "filename": "foto2.svg",
         "path": "assets/13_11_2026/foto2.svg",
+        "thumbPath": "assets/13_11_2026/foto2.svg",
         "size": 865
       }
     ]
@@ -28,6 +30,7 @@
       {
         "filename": "foto1.svg",
         "path": "assets/06_11_2026/foto1.svg",
+        "thumbPath": "assets/06_11_2026/foto1.svg",
         "size": 711
       }
     ]

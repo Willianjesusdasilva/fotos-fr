@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -8,10 +9,9 @@ const __dirname = path.dirname(__filename);
 const publicAssetsDir = path.resolve(__dirname, '../public/assets');
 const outputJson = path.resolve(__dirname, '../public/gallery.json');
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.avif']);
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tiff', '.avif']);
 
 function parseFolderDate(folderName) {
-  // Expected formats: DD_MM_YYYY or DD-MM-YYYY or YYYY-MM-DD
   const matchDmy = folderName.match(/^(\d{1,2})[_-](\d{1,2})[_-](\d{4})$/);
   if (matchDmy) {
     const day = matchDmy[1].padStart(2, '0');
@@ -43,7 +43,69 @@ function parseFolderDate(folderName) {
   };
 }
 
-function scanGallery() {
+async function processPhoto(folderPath, folderName, file) {
+  const ext = path.extname(file).toLowerCase();
+  const filePath = path.join(folderPath, file);
+  const stats = fs.statSync(filePath);
+
+  // If it's an SVG or already a generated thumbnail, handle appropriately
+  if (ext === '.svg') {
+    return {
+      filename: file,
+      path: `assets/${folderName}/${file}`,
+      thumbPath: `assets/${folderName}/${file}`,
+      size: stats.size
+    };
+  }
+
+  // Thumbnails directory inside the date folder
+  const thumbsDir = path.join(folderPath, '.thumbs');
+  if (!fs.existsSync(thumbsDir)) {
+    fs.mkdirSync(thumbsDir, { recursive: true });
+  }
+
+  const thumbFilename = `${path.parse(file).name}_thumb.webp`;
+  const thumbPathOnDisk = path.join(thumbsDir, thumbFilename);
+  const thumbRelativePath = `assets/${folderName}/.thumbs/${thumbFilename}`;
+
+  // Generate thumbnail if it doesn't exist or original is newer
+  let shouldGenerate = false;
+  if (!fs.existsSync(thumbPathOnDisk)) {
+    shouldGenerate = true;
+  } else {
+    const thumbStats = fs.statSync(thumbPathOnDisk);
+    if (stats.mtimeMs > thumbStats.mtimeMs) {
+      shouldGenerate = true;
+    }
+  }
+
+  if (shouldGenerate) {
+    try {
+      await sharp(filePath)
+        .rotate() // automatically adjust EXIF orientation
+        .resize({ width: 600, withoutEnlargement: true })
+        .webp({ quality: 78, effort: 4 })
+        .toFile(thumbPathOnDisk);
+    } catch (err) {
+      console.warn(`[Sharp] Could not process thumbnail for ${file}:`, err.message);
+      return {
+        filename: file,
+        path: `assets/${folderName}/${file}`,
+        thumbPath: `assets/${folderName}/${file}`,
+        size: stats.size
+      };
+    }
+  }
+
+  return {
+    filename: file,
+    path: `assets/${folderName}/${file}`,
+    thumbPath: thumbRelativePath,
+    size: stats.size
+  };
+}
+
+async function scanGallery() {
   if (!fs.existsSync(publicAssetsDir)) {
     console.log(`Directory ${publicAssetsDir} does not exist. Creating...`);
     fs.mkdirSync(publicAssetsDir, { recursive: true });
@@ -57,19 +119,18 @@ function scanGallery() {
       const folderPath = path.join(publicAssetsDir, entry.name);
       const files = fs.readdirSync(folderPath);
 
-      const photos = files
-        .filter(file => {
-          const ext = path.extname(file).toLowerCase();
-          return IMAGE_EXTENSIONS.has(ext);
-        })
-        .map(file => {
-          const stats = fs.statSync(path.join(folderPath, file));
-          return {
-            filename: file,
-            path: `assets/${entry.name}/${file}`,
-            size: stats.size
-          };
-        });
+      // Filter raw candidate files (ignore .thumbs folder and hidden files)
+      const rawImageFiles = files.filter(file => {
+        if (file.startsWith('.')) return false;
+        const ext = path.extname(file).toLowerCase();
+        return IMAGE_EXTENSIONS.has(ext) || ext === '.svg';
+      });
+
+      const photos = [];
+      for (const file of rawImageFiles) {
+        const photoData = await processPhoto(folderPath, entry.name, file);
+        photos.push(photoData);
+      }
 
       if (photos.length > 0) {
         const dateMeta = parseFolderDate(entry.name);
