@@ -1,0 +1,35 @@
+[
+  {
+    "id": "13_11_2026",
+    "title": "13/11/2026",
+    "rawFolder": "13_11_2026",
+    "isoDate": "2026-11-13",
+    "count": 2,
+    "photos": [
+      {
+        "filename": "foto1.svg",
+        "path": "assets/13_11_2026/foto1.svg",
+        "size": 1093
+      },
+      {
+        "filename": "foto2.svg",
+        "path": "assets/13_11_2026/foto2.svg",
+        "size": 865
+      }
+    ]
+  },
+  {
+    "id": "06_11_2026",
+    "title": "06/11/2026",
+    "rawFolder": "06_11_2026",
+    "isoDate": "2026-11-06",
+    "count": 1,
+    "photos": [
+      {
+        "filename": "foto1.svg",
+        "path": "assets/06_11_2026/foto1.svg",
+        "size": 711
+      }
+    ]
+  }
+]
